@@ -1,76 +1,70 @@
 require('dotenv').config();
-const { Pool }               = require('pg');
-const { encrypt, decrypt }   = require('./utils/encryption');
+const { PrismaClient } = require('@prisma/client');
+const { encrypt, decrypt } = require('./utils/encryption');
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
-});
+const prisma = new PrismaClient();
+
+// ─── Mapeo Prisma (camelCase) → snake_case ────────────────
+// Permite que el resto del código use usuario.notion_token / notion_db_id sin cambios
+function toUsuario(row) {
+  if (!row) return null;
+  return {
+    id:           row.id,
+    nombre:       row.nombre,
+    telefono:     row.telefono,
+    notion_token: decrypt(row.notionToken),
+    notion_db_id: row.notionDbId,
+    activo:       row.activo,
+    creado_en:    row.creadoEn,
+  };
+}
 
 // ─── Usuarios ────────────────────────────────────────────
 
-function decryptUsuario(row) {
-  if (!row) return null;
-  return { ...row, notion_token: decrypt(row.notion_token) };
-}
-
 async function getUsuarios() {
-  const res = await pool.query('SELECT * FROM usuarios WHERE activo = true');
-  return res.rows.map(decryptUsuario);
+  const rows = await prisma.usuario.findMany({ where: { activo: true } });
+  return rows.map(toUsuario);
 }
 
 async function getUsuarioPorTelefono(telefono) {
-  const res = await pool.query(
-    'SELECT * FROM usuarios WHERE telefono = $1',
-    [telefono]
-  );
-  return decryptUsuario(res.rows[0] || null);
+  const row = await prisma.usuario.findUnique({ where: { telefono } });
+  return toUsuario(row);
 }
 
 async function registrarUsuario({ nombre, telefono, notion_token, notion_db_id }) {
   const tokenCifrado = encrypt(notion_token);
-  const res = await pool.query(
-    `INSERT INTO usuarios (nombre, telefono, notion_token, notion_db_id)
-     VALUES ($1, $2, $3, $4)
-     ON CONFLICT (telefono) DO UPDATE
-     SET notion_token = $3, notion_db_id = $4
-     RETURNING *`,
-    [nombre, telefono, tokenCifrado, notion_db_id]
-  );
-  return decryptUsuario(res.rows[0]);
+  const row = await prisma.usuario.upsert({
+    where:  { telefono },
+    update: { notionToken: tokenCifrado, notionDbId: notion_db_id },
+    create: { nombre, telefono, notionToken: tokenCifrado, notionDbId: notion_db_id },
+  });
+  return toUsuario(row);
 }
 
 // ─── Recordatorios ───────────────────────────────────────
 
 async function insertarRecordatorio({ telefono, actividad_id, nombre, enviarEn }) {
-  const res = await pool.query(
-    `INSERT INTO recordatorios (telefono, actividad_id, nombre, enviar_en)
-     VALUES ($1, $2, $3, $4)
-     ON CONFLICT DO NOTHING
-     RETURNING *`,
-    [telefono, actividad_id, nombre, enviarEn]
-  );
-  return res.rows[0];
+  return prisma.recordatorio.create({
+    data: { telefono, actividadId: actividad_id, nombre, enviarEn },
+  });
 }
 
 async function getRecordatoriosPendientes() {
-  const res = await pool.query(
-    `SELECT * FROM recordatorios
-     WHERE enviado = false AND enviar_en <= NOW()
-     ORDER BY enviar_en ASC`
-  );
-  return res.rows;
+  return prisma.recordatorio.findMany({
+    where:   { enviado: false, enviarEn: { lte: new Date() } },
+    orderBy: { enviarEn: 'asc' },
+  });
 }
 
 async function marcarRecordatorioEnviado(id) {
-  await pool.query(
-    'UPDATE recordatorios SET enviado = true WHERE id = $1',
-    [id]
-  );
+  await prisma.recordatorio.update({
+    where: { id },
+    data:  { enviado: true },
+  });
 }
 
 module.exports = {
-  pool,
+  prisma,
   getUsuarios,
   getUsuarioPorTelefono,
   registrarUsuario,

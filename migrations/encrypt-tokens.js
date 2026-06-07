@@ -3,8 +3,8 @@
 //   node migrations/encrypt-tokens.js
 require('dotenv').config();
 
-const { pool }                   = require('../db');
-const { encrypt, isEncrypted }   = require('../utils/encryption');
+const { prisma }               = require('../db');
+const { encrypt, isEncrypted } = require('../utils/encryption');
 
 async function migrar() {
   console.log('Iniciando migración de tokens...');
@@ -14,30 +14,31 @@ async function migrar() {
     process.exit(1);
   }
 
-  const { rows } = await pool.query('SELECT id, nombre, notion_token FROM usuarios');
-  console.log(`Usuarios encontrados: ${rows.length}`);
+  const usuarios = await prisma.usuario.findMany({
+    select: { id: true, nombre: true, notionToken: true },
+  });
+  console.log(`Usuarios encontrados: ${usuarios.length}`);
 
   let migrados = 0;
   let omitidos = 0;
 
-  for (const row of rows) {
-    if (isEncrypted(row.notion_token)) {
-      console.log(`  ⏭  ${row.nombre} — ya cifrado, omitido`);
+  for (const u of usuarios) {
+    if (isEncrypted(u.notionToken)) {
+      console.log(`  ⏭  ${u.nombre} — ya cifrado, omitido`);
       omitidos++;
       continue;
     }
 
-    const tokenCifrado = encrypt(row.notion_token);
-    await pool.query(
-      'UPDATE usuarios SET notion_token = $1 WHERE id = $2',
-      [tokenCifrado, row.id]
-    );
-    console.log(`  ✅ ${row.nombre} — token cifrado`);
+    await prisma.usuario.update({
+      where: { id: u.id },
+      data:  { notionToken: encrypt(u.notionToken) },
+    });
+    console.log(`  ✅ ${u.nombre} — token cifrado`);
     migrados++;
   }
 
   console.log(`\nMigración completada: ${migrados} cifrado(s), ${omitidos} omitido(s)`);
-  await pool.end();
+  await prisma.$disconnect();
 }
 
 migrar().catch(err => {

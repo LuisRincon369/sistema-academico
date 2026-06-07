@@ -1,0 +1,36 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  // DATABASE_URL  → pooler de Supabase (puerto 6543, para queries en runtime)
+  // DIRECT_URL    → conexión directa (puerto 5432, requerida por prisma db push / migrate)
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model Usuario {
+  id          String   @id @default(uuid()) @db.Uuid
+  nombre      String   @db.VarChar(100)
+  telefono    String   @unique @db.VarChar(20)
+  notionToken String   @map("notion_token")
+  notionDbId  String   @db.VarChar(100) @map("notion_db_id")
+  activo      Boolean  @default(true)
+  creadoEn    DateTime @default(now()) @map("creado_en")
+
+  @@map("usuarios")
+}
+
+model Recordatorio {
+  id          String   @id @default(uuid()) @db.Uuid
+  telefono    String   @db.VarChar(20)
+  actividadId String   @db.VarChar(100) @map("actividad_id")
+  nombre      String
+  enviarEn    DateTime @map("enviar_en")
+  enviado     Boolean  @default(false)
+  creadoEn    DateTime @default(now()) @map("creado_en")
+
+  @@index([enviarEn], map: "idx_recordatorios_pendientes")
+  @@map("recordatorios")
+}
