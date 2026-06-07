@@ -6,7 +6,7 @@ const {
   invalidarCache,
   marcarCompletada,
   marcarPospuesta,
-  getTemas,
+  getDetalleActividad,
   formatearActividades,
 } = require('../services/notion');
 const { enviarWhatsApp } = require('../services/twilio');
@@ -175,17 +175,25 @@ async function webhookHandler(req, res) {
         await enviarWhatsApp(telefono, `❌ No encontré la actividad ${idx + 1}. Envía *semana* para ver la lista.`);
         return;
       }
-      const nombre = actividad.properties?.Nombre?.title?.[0]?.plain_text || 'actividad';
-      const temas  = await getTemas(usuario.notion_token, actividad.id);
-      const pct    = actividad.properties?.Porcentaje?.number != null
+      const nombre  = actividad.properties?.Nombre?.title?.[0]?.plain_text || 'actividad';
+      const pct     = actividad.properties?.Porcentaje?.number != null
         ? Math.round(actividad.properties.Porcentaje.number * 100) + '%'
         : '?%';
-      const tipo  = actividad.properties?.Tipo?.select?.name || '';
-      const fecha = actividad.properties?.Fecha?.date?.start || 'sin fecha';
+      const tipo     = actividad.properties?.Tipo?.select?.name || '';
+      const fecha    = actividad.properties?.Fecha?.date?.start || 'sin fecha';
+      const detalle  = await getDetalleActividad(usuario.notion_token, actividad.id);
+      const semana   = detalle.semana ? `Semana ${detalle.semana}` : '';
+      const materia  = detalle.materia || '';
+      const categoria = detalle.categoria || '';
 
-      const respuesta = temas
-        ? `📖 *${nombre}*\n📊 ${pct}  |  🏷 ${tipo}  |  📅 ${fecha}\n\n*Temas:*\n${temas}`
-        : `📖 *${nombre}*\n📊 ${pct}  |  🏷 ${tipo}  |  📅 ${fecha}\n\n_Sin temas registrados en Notion._`;
+      const meta = [pct, tipo, categoria, fecha, semana].filter(Boolean).join('  |  ');
+      const respuesta = [
+        `📖 *${nombre}*`,
+        materia ? `📘 ${materia}` : '',
+        meta,
+        '',
+        detalle.temas ? `*Temas:*\n${detalle.temas}` : '_Sin temas registrados en Notion._',
+      ].filter(l => l !== '').join('\n');
 
       await enviarWhatsApp(telefono, respuesta);
     }

@@ -65,36 +65,45 @@ async function marcarPospuesta(token, pageId) {
   });
 }
 
-async function getTemas(token, pageId) {
+async function getDetalleActividad(token, pageId) {
   const notion = getCliente(token);
   const page   = await notion.pages.retrieve({ page_id: pageId });
-  const temas  = page.properties?.Temas?.rich_text?.[0]?.plain_text;
-  return temas || null;
+  const props  = page.properties;
+  return {
+    temas:     props?.Temas?.rich_text?.[0]?.plain_text || null,
+    materia:   props?.Materia?.select?.name || null,
+    semana:    props?.Semana?.number || null,
+    categoria: props?.Categoria?.select?.name || null,
+  };
 }
 
 function formatearActividades(actividades) {
   if (!actividades.length) return null;
 
   const lineas = actividades.map((a, i) => {
-    const props   = a.properties;
-    const nombre  = props.Nombre?.title?.[0]?.plain_text || 'Sin nombre';
-    const fecha   = props.Fecha?.date?.start;
-    const pct     = props.Porcentaje?.number != null
+    const props    = a.properties;
+    const nombre   = props.Nombre?.title?.[0]?.plain_text || 'Sin nombre';
+    const fecha    = props.Fecha?.date?.start;
+    const pct      = props.Porcentaje?.number != null
       ? Math.round(props.Porcentaje.number * 100) + '%'
       : '?%';
-    const tipo    = props.Tipo?.select?.name || '';
+    const tipo     = props.Tipo?.select?.name || '';
+    const materia  = props.Materia?.select?.name || '';
+    const semana   = props.Semana?.number ? `S${props.Semana.number}` : '';
     const fechaObj = fecha ? new Date(fecha + 'T12:00:00') : null;
-    const hoy     = new Date(); hoy.setHours(0, 0, 0, 0);
-    const dias    = fechaObj
-      ? Math.ceil((fechaObj - hoy) / 86400000)
-      : null;
-    const emoji   = dias === null ? '⚪' : dias <= 1 ? '🔴' : dias <= 3 ? '🟡' : '🟢';
-    const diasStr = dias === null ? '' : dias === 0 ? 'HOY' : dias === 1 ? 'mañana' : `${dias}d`;
+    const hoy      = new Date(); hoy.setHours(0, 0, 0, 0);
+    const dias     = fechaObj ? Math.ceil((fechaObj - hoy) / 86400000) : null;
+    const emoji    = dias === null ? '⚪' : dias <= 1 ? '🔴' : dias <= 3 ? '🟡' : '🟢';
+    const diasStr  = dias === null ? '' : dias === 0 ? 'HOY' : dias === 1 ? 'mañana' : `${dias}d`;
     const fechaStr = fechaObj
       ? fechaObj.toLocaleDateString('es-CO', { day: '2-digit', month: 'short' })
       : 'sin fecha';
 
-    return `${emoji} *${i + 1}. ${nombre}*\n   📚 ${tipo}  |  📊 ${pct}  |  📅 ${fechaStr} (${diasStr})`;
+    const linea2 = [materia, tipo, pct, `${fechaStr} (${diasStr})`, semana]
+      .filter(Boolean)
+      .join('  |  ');
+
+    return `${emoji} *${i + 1}. ${nombre}*\n   ${linea2}`;
   });
 
   return `📋 *Actividades próximas:*\n\n${lineas.join('\n\n')}\n\n_Responde: *listo N* · *info N* · *posponer N* · *semana*_`;
@@ -107,6 +116,6 @@ module.exports = {
   invalidarCache,
   marcarCompletada,
   marcarPospuesta,
-  getTemas,
+  getDetalleActividad,
   formatearActividades,
 };
