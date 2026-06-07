@@ -1,6 +1,5 @@
 const twilio = require('twilio');
-const { getUsuarioPorTelefono }  = require('../db');
-const { insertarRecordatorio }   = require('../db');
+const { getUsuarioPorTelefono, registrarUsuario, insertarRecordatorio } = require('../db');
 const {
   getActividadesCacheadas,
   getActividadPorIndice,
@@ -13,9 +12,7 @@ const {
 const { enviarWhatsApp } = require('../services/twilio');
 const logger             = require('../utils/logger');
 
-// ─── R3: Validación de firma Twilio ──────────────────────
-// En producción rechaza requests que no vengan de Twilio.
-// En desarrollo se omite para facilitar pruebas locales.
+// ─── Validación de firma Twilio (R3) ─────────────────────
 function validarFirmaTwilio(req, res, next) {
   if (process.env.NODE_ENV !== 'production') return next();
 
@@ -42,8 +39,56 @@ function validarFirmaTwilio(req, res, next) {
   next();
 }
 
+// ─── Auto-registro ────────────────────────────────────────
+// Flujo: usuario desconocido envía "registrar [db_id]"
+// El token de Notion se toma del env global (NOTION_TOKEN)
+const UUID_REGEX = /^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$/i;
+
+async function manejarRegistro(telefono, entrada) {
+  const partes = entrada.trim().split(/\s+/);
+
+  if (partes[0] !== 'registrar') return false;
+
+  if (partes.length < 2) {
+    await enviarWhatsApp(telefono,
+      `📋 *Registro*\n\n` +
+      `Envía tu ID de base de datos de Notion:\n` +
+      `*registrar [db_id]*\n\n` +
+      `_El DB ID lo encuentras en la URL de tu base de datos Notion:_\n` +
+      `notion.so/Mi-Base-*1a2b3c4d...*`
+    );
+    return true;
+  }
+
+  const dbId = partes[1].replace(/-/g, '');
+  if (!UUID_REGEX.test(partes[1]) && dbId.length !== 32) {
+    await enviarWhatsApp(telefono,
+      `❌ El ID no tiene el formato correcto.\n` +
+      `Debe ser el UUID de tu base de datos Notion.\n\n` +
+      `Ejemplo: _1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d_`
+    );
+    return true;
+  }
+
+  if (!process.env.NOTION_TOKEN) {
+    logger.error('NOTION_TOKEN no configurado — no se puede auto-registrar');
+    await enviarWhatsApp(telefono, '⚠️ El sistema no está configurado para registro automático. Contacta al administrador.');
+    return true;
+  }
+
+  const nombre = `Usuario ${telefono.slice(-4)}`;
+  await registrarUsuario({ nombre, telefono, notion_db_id: partes[1] });
+  logger.info('Usuario auto-registrado', { telefono, notion_db_id: partes[1] });
+
+  await enviarWhatsApp(telefono,
+    `✅ *¡Registrado exitosamente!*\n\n` +
+    `Ya puedes usar el bot. Envía *ayuda* para ver los comandos disponibles.\n\n` +
+    `_Asegúrate de que tu integración de Notion tenga acceso a tu base de datos._`
+  );
+  return true;
+}
+
 async function webhookHandler(req, res) {
-  // Twilio requiere 200 inmediato; la lógica corre de forma asíncrona
   res.sendStatus(200);
 
   const { Body, From } = req.body;
@@ -54,11 +99,19 @@ async function webhookHandler(req, res) {
 
   logger.info('Mensaje recibido', { telefono, comando: entrada });
 
+  // Permitir registrar antes de verificar si el usuario existe
+  if (entrada.startsWith('registrar')) {
+    await manejarRegistro(telefono, entrada);
+    return;
+  }
+
   const usuario = await getUsuarioPorTelefono(telefono);
   if (!usuario) {
     logger.warn('Usuario no registrado', { telefono });
     await enviarWhatsApp(telefono,
-      '❌ Tu número no está registrado en el sistema.\nContacta al administrador para registrarte.'
+      `❌ Tu número no está registrado.\n\n` +
+      `Para registrarte envía:\n*registrar [id_de_tu_base_notion]*\n\n` +
+      `_Ejemplo: registrar 1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d_`
     );
     return;
   }
@@ -88,7 +141,7 @@ async function webhookHandler(req, res) {
       }
       const nombre = actividad.properties?.Nombre?.title?.[0]?.plain_text || 'actividad';
       await marcarCompletada(usuario.notion_token, actividad.id);
-      invalidarCache(telefono); // la lista cambió — forzar recarga
+      invalidarCache(telefono);
       await enviarWhatsApp(telefono, `✅ *${nombre}* marcada como completada en Notion.`);
     }
 
@@ -102,21 +155,12 @@ async function webhookHandler(req, res) {
         await enviarWhatsApp(telefono, `❌ No encontré la actividad ${idx + 1}. Envía *semana* para ver la lista.`);
         return;
       }
-      const nombre    = actividad.properties?.Nombre?.title?.[0]?.plain_text || 'actividad';
-      const enviarEn  = new Date(Date.now() + 2 * 60 * 60 * 1000); // ahora + 2 horas
+      const nombre   = actividad.properties?.Nombre?.title?.[0]?.plain_text || 'actividad';
+      const enviarEn = new Date(Date.now() + 2 * 60 * 60 * 1000);
 
-      // R4: actualizar estado en Notion
       await marcarPospuesta(usuario.notion_token, actividad.id);
       invalidarCache(telefono);
-
-      // R1: persistir el recordatorio en BD (sobrevive reinicios)
-      await insertarRecordatorio({
-        telefono,
-        actividad_id: actividad.id,
-        nombre,
-        enviarEn,
-      });
-
+      await insertarRecordatorio({ telefono, actividad_id: actividad.id, nombre, enviarEn });
       await enviarWhatsApp(telefono, `⏰ Te recuerdo *${nombre}* en 2 horas.`);
       logger.info('Recordatorio programado', { telefono, nombre, enviarEn });
     }
@@ -136,8 +180,8 @@ async function webhookHandler(req, res) {
       const pct    = actividad.properties?.Porcentaje?.number != null
         ? Math.round(actividad.properties.Porcentaje.number * 100) + '%'
         : '?%';
-      const tipo   = actividad.properties?.Tipo?.select?.name || '';
-      const fecha  = actividad.properties?.Fecha?.date?.start || 'sin fecha';
+      const tipo  = actividad.properties?.Tipo?.select?.name || '';
+      const fecha = actividad.properties?.Fecha?.date?.start || 'sin fecha';
 
       const respuesta = temas
         ? `📖 *${nombre}*\n📊 ${pct}  |  🏷 ${tipo}  |  📅 ${fecha}\n\n*Temas:*\n${temas}`

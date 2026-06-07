@@ -4,15 +4,21 @@ const { encrypt, decrypt } = require('./utils/encryption');
 
 const prisma = new PrismaClient();
 
-// ─── Mapeo Prisma (camelCase) → snake_case ────────────────
-// Permite que el resto del código use usuario.notion_token / notion_db_id sin cambios
+// Resuelve el token de Notion: usa el individual si existe, si no el global de env
+function resolverToken(notionToken) {
+  if (notionToken) return decrypt(notionToken);
+  const global = process.env.NOTION_TOKEN;
+  if (!global) throw new Error('NOTION_TOKEN no configurado en variables de entorno');
+  return global;
+}
+
 function toUsuario(row) {
   if (!row) return null;
   return {
     id:           row.id,
     nombre:       row.nombre,
     telefono:     row.telefono,
-    notion_token: decrypt(row.notionToken),
+    notion_token: resolverToken(row.notionToken),
     notion_db_id: row.notionDbId,
     activo:       row.activo,
     creado_en:    row.creadoEn,
@@ -31,12 +37,13 @@ async function getUsuarioPorTelefono(telefono) {
   return toUsuario(row);
 }
 
-async function registrarUsuario({ nombre, telefono, notion_token, notion_db_id }) {
-  const tokenCifrado = encrypt(notion_token);
+// notion_token es opcional — si no se pasa, se usará NOTION_TOKEN global en runtime
+async function registrarUsuario({ nombre, telefono, notion_db_id, notion_token }) {
+  const tokenCifrado = notion_token ? encrypt(notion_token) : null;
   const row = await prisma.usuario.upsert({
     where:  { telefono },
-    update: { notionToken: tokenCifrado, notionDbId: notion_db_id },
-    create: { nombre, telefono, notionToken: tokenCifrado, notionDbId: notion_db_id },
+    update: { notionDbId: notion_db_id, ...(tokenCifrado && { notionToken: tokenCifrado }) },
+    create: { nombre, telefono, notionDbId: notion_db_id, notionToken: tokenCifrado },
   });
   return toUsuario(row);
 }
